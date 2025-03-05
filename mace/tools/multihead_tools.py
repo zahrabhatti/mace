@@ -19,8 +19,8 @@ from mace.tools.scripts_utils import (
 @dataclasses.dataclass
 class HeadConfig:
     head_name: str
-    train_file: Optional[str] = None
-    valid_file: Optional[str] = None
+    train_file: Optional[Union[str, List[str]]] = None
+    valid_file: Optional[Union[str, List[str]]] = None
     test_file: Optional[str] = None
     test_dir: Optional[str] = None
     E0s: Optional[Any] = None
@@ -145,7 +145,13 @@ def assemble_mp_data(
         logging.info(msg)
         msg = f"Using Materials Project descriptors with {descriptors_mp}"
         logging.info(msg)
-        config_pt_paths = [head.train_file for head in head_configs]
+        # Get all train files for each head
+        config_pt_paths = []
+        for head in head_configs:
+            if isinstance(head.train_file, list):
+                config_pt_paths.extend(head.train_file)
+            else:
+                config_pt_paths.append(head.train_file)
         args_samples = {
             "configs_pt": dataset_mp,
             "configs_ft": config_pt_paths,
