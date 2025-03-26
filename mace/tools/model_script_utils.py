@@ -254,7 +254,7 @@ def _build_model(
         )
     if args.model == "EnergyDipolesMACE":
         assert (
-            args.loss == "energy_forces_dipole"
+            args.loss == "energy_forces_dipole" or args.loss == "energy_forces_dipole_phaseless"
         ), "Use energy_forces_dipole loss with EnergyDipolesMACE model"
         assert (
             args.error_table == "EnergyDipoleRMSE"
