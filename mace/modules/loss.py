@@ -76,25 +76,13 @@ def weighted_mean_squared_error_dipole(ref: Batch, pred: TensorDict) -> torch.Te
     # return torch.mean(torch.square((torch.reshape(ref['dipole'], pred["dipole"].shape) - pred['dipole']) / num_atoms))  # []
 
 def weighted_mean_squared_error_dipole_phaseless(ref: Batch, pred: TensorDict) -> torch.Tensor:
-
     num_atoms = (ref.ptr[1:] - ref.ptr[:-1]).unsqueeze(-1)
-
-    minus_diff = (ref.dipole - pred["dipole"])
-    sum_diff = (ref.dipole + pred["dipole"])
-
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    opt_diff = torch.empty(minus_diff.shape, device=device)
-    for row in range(0,minus_diff.shape[0]):
-        
-        norm_minus =  torch.norm(minus_diff[row,:])
-        norm_sum = torch.norm(sum_diff[row,:])
-
-        if norm_minus <= norm_sum:
-            opt_diff[row,:] = minus_diff[row,:]
-        else:               
-            opt_diff[row,:] = sum_diff[row,:]
-
-    return torch.mean(torch.square((opt_diff) / num_atoms))  
+    minus_diff = ref.dipole - pred["dipole"]
+    sum_diff = ref.dipole + pred["dipole"]
+    norm_minus = torch.norm(minus_diff, dim=1, keepdim=True)
+    norm_sum = torch.norm(sum_diff, dim=1, keepdim=True)
+    opt_diff = torch.where(norm_minus <= norm_sum, minus_diff, sum_diff)
+    return torch.mean(torch.square(opt_diff / num_atoms))
 
 def conditional_mse_forces(ref: Batch, pred: TensorDict) -> torch.Tensor:
     # forces: [n_atoms, 3]
@@ -371,7 +359,12 @@ class DipoleSingleLoss(torch.nn.Module):
 
     def __repr__(self):
         return f"{self.__class__.__name__}(" f"dipole_weight={self.dipole_weight:.3f})"
-
+    
+class DipoleSinglePhaseLessLoss(DipoleSingleLoss):
+    def forward(self, ref: Batch, pred: TensorDict) -> torch.Tensor:
+        return (
+            self.dipole_weight * weighted_mean_squared_error_dipole_phaseless(ref, pred) * 100.0
+        )  # multiply by 100 to have the right scale for the loss
 
 class WeightedEnergyForcesDipoleLoss(torch.nn.Module):
     def __init__(self, energy_weight=1.0, forces_weight=1.0, dipole_weight=1.0) -> None:

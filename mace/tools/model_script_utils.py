@@ -239,7 +239,7 @@ def _build_model(
             MLP_irreps=o3.Irreps(args.MLP_irreps),
         )
     if args.model == "AtomicDipolesMACE":
-        assert args.loss == "dipole", "Use dipole loss with AtomicDipolesMACE model"
+        assert args.loss == "dipole" or args.loss == "dipole_phaseless", f"Use {args.loss} loss with AtomicDipolesMACE model"
         assert (
             args.error_table == "DipoleRMSE"
         ), "Use error_table DipoleRMSE with AtomicDipolesMACE model"
@@ -255,7 +255,7 @@ def _build_model(
     if args.model == "EnergyDipolesMACE":
         assert (
             args.loss == "energy_forces_dipole" or args.loss == "energy_forces_dipole_phaseless"
-        ), "Use energy_forces_dipole loss with EnergyDipolesMACE model"
+        ), f"Use {args.loss} loss with EnergyDipolesMACE model"
         assert (
             args.error_table == "EnergyDipoleRMSE"
         ), "Use error_table EnergyDipoleRMSE with AtomicDipolesMACE model"

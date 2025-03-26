@@ -437,7 +437,6 @@ def evaluate(
 
 
 class MACELoss(Metric):
-
     def __init__(self, loss_fn: torch.nn.Module):
         super().__init__()
         self.loss_fn = loss_fn
@@ -464,7 +463,6 @@ class MACELoss(Metric):
         self.add_state("delta_mus_per_atom", default=[], dist_reduce_fx="cat")
 
     def update(self, batch, output):  # pylint: disable=arguments-differ
-
         loss = self.loss_fn(pred=output, ref=batch)
         self.total_loss += loss
         self.num_data += batch.num_graphs
@@ -489,7 +487,7 @@ class MACELoss(Metric):
                 (batch.virials - output["virials"])
                 / (batch.ptr[1:] - batch.ptr[:-1]).view(-1, 1, 1)
             )
-        if output.get("dipole") is not None and batch.dipole is not None and self.loss_fn.__class__.__name__ == "WeightedEnergyForcesDipoleLoss":  
+        if output.get("dipole") is not None and batch.dipole is not None and (self.loss_fn.__class__.__name__ == "WeightedEnergyForcesDipoleLoss" or self.loss_fn.__class__.__name__ == "DipoleSingleLoss" ):  
             self.Mus_computed += 1.0
             self.mus.append(batch.dipole)
             self.delta_mus.append(batch.dipole - output["dipole"])
@@ -497,33 +495,23 @@ class MACELoss(Metric):
                 (batch.dipole - output["dipole"])
                 / (batch.ptr[1:] - batch.ptr[:-1]).unsqueeze(-1)
             )
-        if output.get("dipole") is not None and batch.dipole is not None and self.loss_fn.__class__.__name__ == "WeightedEnergyForcesDipolePhaseLessLoss":
+
+        if output.get("dipole") is not None and batch.dipole is not None and (self.loss_fn.__class__.__name__ == "WeightedEnergyForcesDipolePhaseLessLoss" or self.loss_fn.__class__.__name__ == "DipoleSinglePhaseLessLoss"):
             self.Mus_computed += 1.0
             self.mus.append(batch.dipole)   
 
             # calculate two different diffs and construct tensor from the min for each validation example
-            minus_diff = (batch.dipole - output["dipole"])
-            sum_diff = (batch.dipole + output["dipole"])
-
-            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-            opt_diff = torch.empty(minus_diff.shape, device=device)   
-
-            for row in range(0,minus_diff.shape[0]):
-                
-                norm_minus =  torch.norm(minus_diff[row,:])
-                norm_sum = torch.norm(sum_diff[row,:])
-
-                if norm_minus <= norm_sum:
-                    opt_diff[row,:] = minus_diff[row,:]
-                else:               
-                    opt_diff[row,:] = sum_diff[row,:]
+            minus_diff = batch.dipole - output["dipole"]
+            sum_diff = batch.dipole + output["dipole"]
+            norm_minus = torch.norm(minus_diff, dim=1, keepdim=True)
+            norm_sum = torch.norm(sum_diff, dim=1, keepdim=True)
+            opt_diff = torch.where(norm_minus <= norm_sum, minus_diff, sum_diff)            
 
             self.delta_mus.append(opt_diff)
             self.delta_mus_per_atom.append(
                 (opt_diff)
                 / (batch.ptr[1:] - batch.ptr[:-1]).unsqueeze(-1)
             )
-
 
     def convert(self, delta: Union[torch.Tensor, List[torch.Tensor]]) -> np.ndarray:
         if isinstance(delta, list):
