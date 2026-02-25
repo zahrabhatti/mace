@@ -136,7 +136,8 @@ def get_dataset_from_xyz(
 
         logging.info(
             f"Training file {i+1}/{len(train_paths)} [{len(train_configs)} configs, "
-            f"{np.sum([1 if config.energy else 0 for config in train_configs])} energy, "
+            # f"{np.sum([1 if config.energy else 0 for config in train_configs])} energy, "
+            f"{np.sum([1 if getattr(config, 'energy', None) is not None else 0 for config in all_train_configs])} energy, "
             f"{np.sum([1 if getattr(config, 'forces', None) is not None else 0 for config in train_configs])} forces, "
             f"{np.sum([1 if getattr(config, 'stress', None) is not None else 0 for config in train_configs])} stresses] loaded from '{path}'"
         )
@@ -144,7 +145,8 @@ def get_dataset_from_xyz(
     # Log total training set info
     logging.info(
         f"Total training set [{len(all_train_configs)} configs, "
-        f"{np.sum([1 if config.energy else 0 for config in all_train_configs])} energy, "
+        # f"{np.sum([1 if config.energy else 0 for config in all_train_configs])} energy, "
+        f"{np.sum([1 if getattr(config, 'energy', None) is not None else 0 for config in all_train_configs])} energy, "
         f"{np.sum([1 if getattr(config, 'forces', None) is not None else 0 for config in all_train_configs])} forces, "
         f"{np.sum([1 if getattr(config, 'stress', None) is not None else 0 for config in all_train_configs])} stresses]"
     )
@@ -169,7 +171,8 @@ def get_dataset_from_xyz(
 
             logging.info(
                 f"Validation file {i+1}/{len(valid_paths)} [{len(valid_configs)} configs, "
-                f"{np.sum([1 if config.energy else 0 for config in valid_configs])} energy, "
+                # f"{np.sum([1 if config.energy else 0 for config in valid_configs])} energy, "
+                f"{np.sum([1 if getattr(config, 'energy', None) is not None else 0 for config in all_valid_configs])} energy, "
                 f"{np.sum([1 if getattr(config, 'forces', None) is not None else 0 for config in valid_configs])} forces, "
                 f"{np.sum([1 if getattr(config, 'stress', None) is not None else 0 for config in valid_configs])} stresses] loaded from '{path}'"
             )
@@ -177,7 +180,8 @@ def get_dataset_from_xyz(
         # Log total validation set info
         logging.info(
             f"Total validation set [{len(all_valid_configs)} configs, "
-            f"{np.sum([1 if config.energy else 0 for config in all_valid_configs])} energy, "
+            # f"{np.sum([1 if config.energy else 0 for config in all_valid_configs])} energy, "
+            f"{np.sum([1 if getattr(config, 'energy', None) is not None else 0 for config in all_valid_configs])} energy, "
             f"{np.sum([1 if getattr(config, 'forces', None) is not None else 0 for config in all_valid_configs])} forces, "
             f"{np.sum([1 if getattr(config, 'stress', None) is not None else 0 for config in all_valid_configs])} stresses]"
         )
