@@ -655,7 +655,7 @@ class MACELoss(Metric):
             self.virials_computed += filter_nonzero_weight(
                 batch, self.delta_virials, batch.weight, batch.virials_weight
             )
-        if output.get("dipole") is not None and batch.dipole is not None:
+        if output.get("dipole") is not None and batch.dipole is not None and (self.loss_fn.__class__.__name__ == "WeightedEnergyForcesDipoleLoss" or self.loss_fn.__class__.__name__ == "DipoleSingleLoss"):
             self.mus.append(batch.dipole)
             self.delta_mus.append(batch.dipole - output["dipole"])
             self.delta_mus_per_atom.append(
