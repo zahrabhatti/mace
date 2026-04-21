@@ -655,7 +655,7 @@ class MACELoss(Metric):
             self.virials_computed += filter_nonzero_weight(
                 batch, self.delta_virials, batch.weight, batch.virials_weight
             )
-        if output.get("dipole") is not None and batch.dipole is not None:
+        if output.get("dipole") is not None and batch.dipole is not None and (self.loss_fn.__class__.__name__ == "WeightedEnergyForcesDipoleLoss" or self.loss_fn.__class__.__name__ == "DipoleSingleLoss" ):
             self.mus.append(batch.dipole)
             self.delta_mus.append(batch.dipole - output["dipole"])
             self.delta_mus_per_atom.append(
@@ -709,6 +709,23 @@ class MACELoss(Metric):
         if isinstance(delta, list):
             delta = torch.cat(delta)
         return to_numpy(delta)
+    
+    def convert_dip(self, delta):
+        fixed = []
+
+        for d in delta:
+            if d.ndim == 1:
+                # try to recover [N,3]
+                if d.numel() % 3 == 0:
+                    d = d.view(-1, 3)
+                else:
+                    raise RuntimeError(f"Cannot reshape dipole tensor {d.shape}")
+            elif d.ndim == 2 and d.shape[1] != 3:
+                raise RuntimeError(f"Invalid dipole shape {d.shape}")
+
+            fixed.append(d)
+
+        return to_numpy(torch.cat(fixed, dim=0))
 
     def compute(self):
 
