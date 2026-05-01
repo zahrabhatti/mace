@@ -701,6 +701,15 @@ def get_loss_fn(
             forces_weight=args.forces_weight,
             dipole_weight=args.dipole_weight,
         )    
+    elif args.loss == "spectral_loss":
+        assert dipole_only is False and compute_dipole is True
+        loss_fn = modules.SpectralLoss(
+            energy_weight=args.energy_weight,
+            forces_weight=args.forces_weight,
+            dipole_weight=args.dipole_weight,
+            spectral_weight=args.spectral_weight, 
+            overlap_sigma= args.overlap_sigma, 
+        )       
     else:
         loss_fn = modules.WeightedEnergyForcesLoss(energy_weight=1.0, forces_weight=1.0)
     return loss_fn
@@ -766,6 +775,13 @@ def get_swa(
             forces_weight=args.swa_forces_weight,
             dipole_weight=args.swa_dipole_weight,
         )   
+    elif args.loss == "spectral_loss":
+        loss_fn_energy = modules.SpectralLoss(
+            args.swa_energy_weight,
+            forces_weight=args.swa_forces_weight,
+            dipole_weight=args.swa_dipole_weight,
+            spectral_weight=args.swa_spectral_weight,
+        )       
         logging.info(
             f"Stage Two (after {args.start_swa} epochs) with loss function: {loss_fn_energy}, with energy weight : {args.swa_energy_weight}, forces weight : {args.swa_forces_weight}, dipole weight : {args.swa_dipole_weight} and learning rate : {args.swa_lr}"
         )    

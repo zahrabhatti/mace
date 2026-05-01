@@ -4,6 +4,7 @@
 # This program is distributed under the MIT License (see MIT.md)
 ###########################################################################################
 
+from itertools import count
 from typing import Optional
 
 import torch
@@ -155,7 +156,117 @@ def weighted_mean_squared_error_dipole(
     raw_loss = torch.square((ref["dipole"] - pred["dipole"]) / num_atoms)
     return reduce_loss(raw_loss, ddp)
 
+def weighted_mean_squared_error_dipole_phaseless(ref: Batch, pred: TensorDict) -> torch.Tensor:
+    num_atoms = (ref.ptr[1:] - ref.ptr[:-1]).unsqueeze(-1)
+    minus_diff = ref.dipole - pred["dipole"]
+    sum_diff = ref.dipole + pred["dipole"]
+    norm_minus = torch.norm(minus_diff, dim=1, keepdim=True)
+    norm_sum = torch.norm(sum_diff, dim=1, keepdim=True)
+    opt_diff = torch.where(norm_minus <= norm_sum, minus_diff, sum_diff)
+    return torch.mean(torch.square(opt_diff / num_atoms))
 
+def spectral_loss(ref: Batch, pred: TensorDict, sigma) -> torch.Tensor:
+
+    # don't calculate for validation
+    if ref.head[0] == ref.head[1]:
+        return torch.tensor(0.0,device="cuda" if torch.cuda.is_available() else "cpu") 
+
+    # number of heads 
+    num_heads =  len(torch.unique(ref.head))
+    nonsolvent_configs = 0
+
+    spectral_mse = torch.zeros(int(len(ref.energy)/num_heads),device="cuda" if torch.cuda.is_available() else "cpu")   
+
+    # for number of different configs 
+    for i in range(0,int(len(ref.energy)/num_heads)):
+
+        # get all es1 entries
+        es1_energy = ref.energy[i*num_heads]
+
+        # discard solvent 
+        if es1_energy == 0.0:
+            continue 
+
+        # make sure positions are the same for all states for that config
+        try: 
+            assert [ref.positions[i*num_heads][0] == ref.positions[(i*num_heads)+state][0] for state in range(1,num_heads)]
+        except AssertionError:
+            print("Ensure training data files have same geometry ordering")
+            continue
+
+        nonsolvent_configs += 1
+
+        ref_e = torch.tensor([ref.energy[(i*num_heads)+state] for state in range(0,num_heads)])
+        pred_e = torch.tensor([pred['energy'][(i*num_heads)+state] for state in range(0,num_heads)])
+
+        # energy overlap matrix for that configuration 
+        S = energy_overlap_matrix(ref_e,sigma)
+
+        ref_tdm = torch.stack([ref.dipole[(i*num_heads)+state] for state in range(num_heads)])
+        with torch.no_grad():
+            pred_tdm = torch.stack([pred["dipole"][(i*num_heads)+state] for state in range(num_heads)])
+
+        # calculate reference and predicted local intensity
+        local_intensity_ref, local_intensity_pred = local_intensity(S,ref_tdm,pred_tdm,ref_e,pred_e)
+
+        spectral_mse[i] = mean_squared_error_local_intensity(local_intensity_ref,local_intensity_pred)
+
+    total_spectral_mse = torch.sum(spectral_mse)/nonsolvent_configs
+    total_spectral_mse.requires_grad_()
+
+    return total_spectral_mse
+
+def energy_overlap_matrix(ref_e,sigma=0.1):
+    
+    S = torch.zeros(len(ref_e),len(ref_e))
+    for i in range(0,len(ref_e)):
+        for j in range(i,len(ref_e)):
+            S[i][j] = torch.exp(-((ref_e[i]-ref_e[j])**2)/(2*sigma**2)) # calculate overlap of these two states
+            S[j][i] = S[i][j]
+
+    return S
+
+def local_intensity(S,ref_tdm,pred_tdm,ref_e,pred_e):
+    
+    eV_hartree_conv = 3.67493e-2
+
+    # oscillator strengths for each state 
+    fosc_i_ref = torch.zeros(len(ref_e))
+    fosc_i_pred = torch.zeros(len(ref_e))
+
+    for i in range(0,len(ref_e)):
+        mag_ref = ref_tdm[i][0]**2 + ref_tdm[i][1]**2 + ref_tdm[i][2]**2
+        # use torch.matmul?
+        fosc_i_ref[i] = 2/3*(ref_e[i])*mag_ref*eV_hartree_conv
+
+        mag_pred = pred_tdm[i][0]**2 + pred_tdm[i][1]**2 + pred_tdm[i][2]**2
+        fosc_i_pred[i] = 2/3*(pred_e[i])*mag_pred*eV_hartree_conv
+
+    # now work out local intensity for each state 
+    total_i_ref = torch.zeros(len(ref_e))
+    total_i_pred = torch.zeros(len(ref_e))
+
+    for i in range(0,len(ref_e)):
+        intensity_per_state_ref = torch.zeros(len(ref_e))
+        intensity_per_state_pred = torch.zeros(len(ref_e))
+
+        for j in range(0,len(ref_e)):
+            intensity_per_state_ref[j] = (S[i][j]*fosc_i_ref[j])  #length 10
+            intensity_per_state_pred[j] = (S[i][j]*fosc_i_pred[j])  #length 10
+
+        # total local intensity for each state
+        total_i_ref[i] = torch.sum(intensity_per_state_ref)
+        total_i_pred[i] = torch.sum(intensity_per_state_pred)
+
+        total_i_ref = total_i_ref.to("cuda" if torch.cuda.is_available() else "cpu")
+        total_i_pred = total_i_pred.to("cuda" if torch.cuda.is_available() else "cpu")
+
+    # now for each state, we have a total sum of the different intensities it 'feels' based on their strength and overlap
+    return total_i_ref,total_i_pred
+
+def mean_squared_error_local_intensity(local_intensity_ref,local_intensity_pred):
+
+    return torch.mean(torch.square((local_intensity_ref-local_intensity_pred)))
 # ------------------------------------------------------------------------------
 # Polarizability Loss Function
 # ------------------------------------------------------------------------------
@@ -180,15 +291,6 @@ def weighted_mean_squared_error_polarizability(
 # ------------------------------------------------------------------------------
 # Conditional Losses for Forces
 # ------------------------------------------------------------------------------
-
-def weighted_mean_squared_error_dipole_phaseless(ref: Batch, pred: TensorDict) -> torch.Tensor:
-    num_atoms = (ref.ptr[1:] - ref.ptr[:-1]).unsqueeze(-1)
-    minus_diff = ref.dipole - pred["dipole"]
-    sum_diff = ref.dipole + pred["dipole"]
-    norm_minus = torch.norm(minus_diff, dim=1, keepdim=True)
-    norm_sum = torch.norm(sum_diff, dim=1, keepdim=True)
-    opt_diff = torch.where(norm_minus <= norm_sum, minus_diff, sum_diff)
-    return torch.mean(torch.square(opt_diff / num_atoms))
 
 def conditional_mse_forces(
     ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
@@ -593,7 +695,7 @@ class WeightedEnergyForcesDipoleLoss(torch.nn.Module):
             "dipole_weight",
             torch.tensor(dipole_weight, dtype=torch.get_default_dtype()),
         )
-
+ 
     def forward(
         self, ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
     ) -> torch.Tensor:
@@ -611,15 +713,67 @@ class WeightedEnergyForcesDipoleLoss(torch.nn.Module):
             f"{self.__class__.__name__}(energy_weight={self.energy_weight:.3f}, "
             f"forces_weight={self.forces_weight:.3f}, dipole_weight={self.dipole_weight:.3f})"
         )
-    
+            
 class WeightedEnergyForcesDipolePhaseLessLoss(WeightedEnergyForcesDipoleLoss):
     def forward(self, ref: Batch, pred: TensorDict) -> torch.Tensor:
+
         return (
             self.energy_weight * weighted_mean_squared_error_energy(ref, pred)
             + self.forces_weight * mean_squared_error_forces(ref, pred)
             + self.dipole_weight * weighted_mean_squared_error_dipole_phaseless(ref, pred) * 100
+        )    
+    
+class SpectralLoss(torch.nn.Module):
+    def __init__(self, energy_weight=1.0, forces_weight=1.0, dipole_weight=1.0, spectral_weight=1.0, overlap_sigma=0.1) -> None:
+        super().__init__()
+        self.register_buffer(
+            "energy_weight",
+            torch.tensor(energy_weight, dtype=torch.get_default_dtype()),
+        )
+        self.register_buffer(
+            "forces_weight",
+            torch.tensor(forces_weight, dtype=torch.get_default_dtype()),
+        )
+        self.register_buffer(
+            "dipole_weight",
+            torch.tensor(dipole_weight, dtype=torch.get_default_dtype()),
+        )
+        # for spectral loss 
+        self.register_buffer(
+            "spectral_weight",
+            torch.tensor(spectral_weight, dtype=torch.get_default_dtype()),
+        )
+        self.register_buffer(
+            "overlap_sigma",
+            torch.tensor(overlap_sigma, dtype=torch.get_default_dtype()),
         )
 
+
+    def forward(
+        self, ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
+    ) -> torch.Tensor:
+        
+        unweighted_spectral_loss = spectral_loss(ref,pred,sigma=self.overlap_sigma) 
+        if torch.isnan(unweighted_spectral_loss):
+            unweighted_spectral_loss = torch.tensor(0.0)
+
+        loss_energy = weighted_mean_squared_error_energy(ref, pred, ddp)
+        loss_forces = mean_squared_error_forces(ref, pred, ddp)
+        loss_dipole = weighted_mean_squared_error_dipole_phaseless(ref, pred) * 100.0
+
+        return (
+            self.energy_weight * loss_energy
+            + self.forces_weight * loss_forces
+            + self.dipole_weight * loss_dipole
+            + self.spectral_weight * unweighted_spectral_loss
+        )
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}(energy_weight={self.energy_weight:.3f}, "
+            f"forces_weight={self.forces_weight:.3f}, dipole_weight={self.dipole_weight:.3f},spectral_weight={self.spectral_weight:.3f})"
+        )    
+    
 class WeightedEnergyForcesL1L2Loss(torch.nn.Module):
     def __init__(self, energy_weight=1.0, forces_weight=1.0) -> None:
         super().__init__()

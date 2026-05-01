@@ -233,7 +233,11 @@ def run(args) -> None:
         args.heads["pt_head"] = prepare_pt_head(
             args, pt_keyspec, foundation_model_avg_num_neighbors
         )
-
+    if args.loss == "spectral_loss":
+        logging.info(
+        "WARNING: when using spectral loss, ensure that training files for all heads are ordered based on geometry"
+    )
+        
     logging.info("===========LOADING INPUT DATA===========")
     heads = list(args.heads.keys())
     logging.info(f"Using heads: {heads}")
@@ -638,11 +642,12 @@ def run(args) -> None:
             dataset_size = len(train_sets[head_config.head_name])
         logging.info(f"Head '{head_config.head_name}' training dataset size: {dataset_size}")
 
+        # per head produce a dataloader object for per head evaluation after training
         train_loader_head = torch_geometric.dataloader.DataLoader(
             dataset=train_sets[head_config.head_name],
             batch_size=args.batch_size,
             shuffle=True,
-            drop_last=(not args.lbfgs),
+            drop_last=False,#(not args.lbfgs),
             pin_memory=args.pin_memory,
             num_workers=args.num_workers,
             generator=torch.Generator().manual_seed(args.seed),
@@ -673,20 +678,39 @@ def run(args) -> None:
             )
             valid_samplers[head] = valid_sampler
 
+    if args.loss == "spectral_loss":        
+        all_train_loaders = {}
+
+        for i in range(len(heads)):
+            
+            # make list of all train_loaders
+            all_train_loaders["es{0}".format(i+1)] = torch_geometric.dataloader.DataLoader(
+            dataset=train_sets[f'es{i+1}'],
+            batch_size=args.batch_size,
+            sampler=train_sampler,
+            shuffle=False, 
+            drop_last=False,
+            pin_memory=args.pin_memory,
+            num_workers=args.num_workers,
+            generator=torch.Generator().manual_seed(args.seed),  # do i need as shuffle=False?
+        )
+            
+    # from combined dataset of all heads, create batches of training data 
     train_loader = torch_geometric.dataloader.DataLoader(
         dataset=train_set,
         batch_size=args.batch_size,
         sampler=train_sampler,
         shuffle=(train_sampler is None),
-        drop_last=(train_sampler is None and not args.lbfgs),
+        drop_last=False,#(train_sampler is None and not args.lbfgs),
         pin_memory=args.pin_memory,
         num_workers=args.num_workers,
         generator=torch.Generator().manual_seed(args.seed),
     )
-
+ 
     valid_loaders = {heads[i]: None for i in range(len(heads))}
     if not isinstance(valid_sets, dict):
-        valid_sets = {"Default": valid_sets}
+        valid_sets = {"Default": valid_sets}  
+    # create validation set per head for evaluation during training    
     for head, valid_set in valid_sets.items():
         valid_loaders[head] = torch_geometric.dataloader.DataLoader(
             dataset=valid_set,
@@ -880,10 +904,14 @@ def run(args) -> None:
                 "Please install it to use XPU device."
             )
 
+    # tmp 
+    # change loss to spectral_loss
+
     tools.train(
         model=model,
         loss_fn=loss_fn,
-        train_loader=train_loader,
+        # change depending on loss argument 
+        train_loader= all_train_loaders if args.loss == "spectral_loss" else train_loader,
         valid_loaders=valid_loaders,
         optimizer=optimizer,
         lr_scheduler=lr_scheduler,

@@ -17,7 +17,7 @@ import torch.distributed
 from torch.nn.parallel import DistributedDataParallel
 from torch.optim import LBFGS
 from torch.optim.swa_utils import SWALR, AveragedModel
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, BatchSampler, RandomSampler
 from torch.utils.data.distributed import DistributedSampler
 from torch_ema import ExponentialMovingAverage
 from torchmetrics import Metric
@@ -202,6 +202,7 @@ def train(
         valid_err_log(
             valid_loss_head, eval_metrics, logger, log_errors, None, valid_loader_name
         )
+    # change checkpointing?
     valid_loss = valid_loss_head  # consider only the last head for the checkpoint
 
     # variable used for broadcast by rank == 0 if epoch loop is exited early, e.g. patience
@@ -381,8 +382,39 @@ def train_one_epoch(
         opt_metrics["epoch"] = epoch
         if rank == 0:
             logger.log(opt_metrics)
-    else:
-        for batch in data_loader:
+
+    elif loss_fn.__class__.__name__ == "SpectralLoss":
+
+        # unpack args
+        dls = {}
+        for i in range(len(data_loader)):
+            dls[f'es{i+1}'] = data_loader[f'es{i+1}']
+       
+        num_configs = len(dls['es1'].dataset)
+        idx = range(0,num_configs)
+        
+        # define new sampler which ensures all states for each config are sampled together
+        sampler = RandomSampler(idx)
+
+        # calculate batch size based on batch_size/num_heads - raise error if not divisible 
+        batch_size =  dls['es1'].batch_size
+        
+        assert batch_size % len(data_loader) == 0, "For spectral loss training, batch size must be divisible by the number of heads"
+            
+        num_configs_per_state = int(batch_size/len(data_loader))
+        batch_sampler = BatchSampler(sampler, batch_size=num_configs_per_state, drop_last=False)
+
+        all_batches = []
+        for batch in batch_sampler: 
+            all_batches.append(batch)       
+
+        for batch_idx in all_batches:
+            
+            # alternate heads so batch is organised per config
+            batch_list = [item for i in batch_idx for item in (dls[f'es{j+1}'].dataset[i] for j in range(len(data_loader)))]
+           
+            batch = dls['es1'].collate_fn(batch_list)
+
             _, opt_metrics = take_step(
                 model=model_to_train,
                 loss_fn=loss_fn,
@@ -398,6 +430,22 @@ def train_one_epoch(
             if rank == 0:
                 logger.log(opt_metrics)
 
+    else: 
+        for batch in data_loader:
+            _, opt_metrics = take_step(
+                model=model_to_train,
+                loss_fn=loss_fn,
+                batch=batch,
+                optimizer=optimizer,
+                ema=ema,
+                output_args=output_args,
+                max_grad_norm=max_grad_norm,
+                device=device,
+            )
+            opt_metrics["mode"] = "opt"
+            opt_metrics["epoch"] = epoch
+            if rank == 0:
+                logger.log(opt_metrics)
 
 def take_step(
     model: torch.nn.Module,
@@ -655,7 +703,8 @@ class MACELoss(Metric):
             self.virials_computed += filter_nonzero_weight(
                 batch, self.delta_virials, batch.weight, batch.virials_weight
             )
-        if output.get("dipole") is not None and batch.dipole is not None and (self.loss_fn.__class__.__name__ == "WeightedEnergyForcesDipoleLoss" or self.loss_fn.__class__.__name__ == "DipoleSingleLoss" ):
+    
+        if output.get("dipole") is not None and batch.dipole is not None and (self.loss_fn.__class__.__name__ == "WeightedEnergyForcesDipoleLoss" or self.loss_fn.__class__.__name__ == "DipoleSingleLoss"):
             self.mus.append(batch.dipole)
             self.delta_mus.append(batch.dipole - output["dipole"])
             self.delta_mus_per_atom.append(
@@ -688,7 +737,7 @@ class MACELoss(Metric):
                 spread_quantity_vector=False,
             )
 
-        if output.get("dipole") is not None and batch.dipole is not None and (self.loss_fn.__class__.__name__ == "WeightedEnergyForcesDipolePhaseLessLoss" or self.loss_fn.__class__.__name__ == "DipoleSinglePhaseLessLoss"):
+        if output.get("dipole") is not None and batch.dipole is not None and (self.loss_fn.__class__.__name__ == "WeightedEnergyForcesDipolePhaseLessLoss" or self.loss_fn.__class__.__name__ == "DipoleSinglePhaseLessLoss" or self.loss_fn.__class__.__name__ == "SpectralLoss"):
             self.Mus_computed += 1.0
             self.mus.append(batch.dipole)   
 
@@ -710,23 +759,6 @@ class MACELoss(Metric):
             delta = torch.cat(delta)
         return to_numpy(delta)
     
-    def convert_dip(self, delta):
-        fixed = []
-
-        for d in delta:
-            if d.ndim == 1:
-                # try to recover [N,3]
-                if d.numel() % 3 == 0:
-                    d = d.view(-1, 3)
-                else:
-                    raise RuntimeError(f"Cannot reshape dipole tensor {d.shape}")
-            elif d.ndim == 2 and d.shape[1] != 3:
-                raise RuntimeError(f"Invalid dipole shape {d.shape}")
-
-            fixed.append(d)
-
-        return to_numpy(torch.cat(fixed, dim=0))
-
     def compute(self):
 
         class NoneMultiply:

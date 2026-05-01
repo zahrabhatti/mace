@@ -675,8 +675,14 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
             "energy_forces_dipole",
             "energy_forces_dipole_phaseless",
             "l1l2energyforces",
+            "spectral_loss",
         ],
     )
+
+    parser.add_argument(
+        "--overlap_sigma", help="value of sigma for gaussian function", type=float, default=0.1
+    )
+
     parser.add_argument(
         "--forces_weight", help="weight of forces loss", type=float, default=100.0
     )
@@ -731,6 +737,17 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=1.0,
         dest="swa_dipole_weight",
+    )
+    parser.add_argument(
+        "--spectral_weight", help="weight of spectral loss", type=float, default=1.0
+    )
+    parser.add_argument(
+        "--swa_spectral_weight",
+        "--stage_two_spectral_weight",
+        help="weight of spectral loss after starting Stage Two (previously called swa)",
+        type=float,
+        default=1.0,
+        dest="swa_spectral_weight",
     )
     parser.add_argument(
         "--swa_polarizability_weight",
