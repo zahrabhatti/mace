@@ -235,7 +235,7 @@ def run(args) -> None:
         )
     if args.loss == "spectral_loss":
         logging.info(
-        "WARNING: when using spectral loss, ensure that training files for all heads are ordered based on geometry"
+        "WARNING: When using spectral loss, ensure that training files for all heads are ordered based on geometry"
     )
         
     logging.info("===========LOADING INPUT DATA===========")
@@ -693,7 +693,7 @@ def run(args) -> None:
             pin_memory=args.pin_memory,
             num_workers=args.num_workers,
             generator=torch.Generator().manual_seed(args.seed),  # do i need as shuffle=False?
-        )
+        )       
             
     # from combined dataset of all heads, create batches of training data 
     train_loader = torch_geometric.dataloader.DataLoader(
@@ -706,7 +706,7 @@ def run(args) -> None:
         num_workers=args.num_workers,
         generator=torch.Generator().manual_seed(args.seed),
     )
- 
+    
     valid_loaders = {heads[i]: None for i in range(len(heads))}
     if not isinstance(valid_sets, dict):
         valid_sets = {"Default": valid_sets}  
@@ -924,6 +924,7 @@ def run(args) -> None:
         save_all_checkpoints=args.save_all_checkpoints,
         output_args=output_args,
         device=device,
+        sigma=args.overlap_sigma if  args.loss == "spectral_loss" else None,
         swa=swa,
         ema=ema,
         max_grad_norm=args.clip_grad,

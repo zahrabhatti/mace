@@ -10,8 +10,10 @@ import time
 from collections import defaultdict
 from contextlib import contextmanager, nullcontext
 from typing import Any, Dict, List, Optional, Tuple, Union
+from types import SimpleNamespace
 
 import numpy as np
+from requests import head
 import torch
 import torch.distributed
 from torch.nn.parallel import DistributedDataParallel
@@ -23,6 +25,7 @@ from torch_ema import ExponentialMovingAverage
 from torchmetrics import Metric
 
 from mace.cli.visualise_train import TrainingPlotter
+from mace.modules.loss import spectral_loss
 
 from . import torch_geometric
 from .checkpoint import CheckpointHandler, CheckpointState
@@ -145,6 +148,23 @@ def valid_err_log(
             f"{inintial_phrase}: head: {valid_loader_name}, loss={valid_loss:8.8f}, RMSE_E_per_atom={error_e:8.2f} meV, RMSE_F={error_f:8.2f} meV / A, RMSE_Mu_per_atom={error_mu:8.2f} mDebye",
         )
 
+def spectral_err_log(spectral_loss,epoch):
+
+    # print validatin spectral loss
+    if epoch is None:
+        inintial_phrase = "Initial"
+    else:
+        inintial_phrase = f"Epoch {epoch}"
+    logging.info(f"{inintial_phrase}: spectral loss={spectral_loss:8.8f}")
+
+def average_loss_heads(average_loss,epoch):
+
+    # print average validation loss for epoch
+    if epoch is None:
+        inintial_phrase = "Initial"
+    else:
+        inintial_phrase = f"Epoch {epoch}"
+    logging.info(f"{inintial_phrase}: average loss of all heads={average_loss:8.8f}")
 
 def train(
     model: torch.nn.Module,
@@ -162,6 +182,7 @@ def train(
     output_args: Dict[str, bool],
     device: torch.device,
     log_errors: str,
+    sigma: float,
     swa: Optional[SWAContainer] = None,
     ema: Optional[ExponentialMovingAverage] = None,
     max_grad_norm: Optional[float] = 10.0,
@@ -191,19 +212,50 @@ def train(
     epoch = start_epoch
 
     # log validation loss before _any_ training
+
+    # properties for all heads to calculate spectral_loss for validation data
+    all_heads = []
+    all_energy_ref = []
+    all_tdm_ref = []
+    all_pos = []
+    all_energy_pred = []
+    all_tdm_pred = []
+
+    # validation losses for all heads 
+    valid_loss_heads = []
+
     for valid_loader_name, valid_loader in valid_loaders.items():
-        valid_loss_head, eval_metrics = evaluate(
+        valid_loss_head, eval_metrics, spectral_properties = evaluate(
             model=model,
             loss_fn=loss_fn,
             data_loader=valid_loader,
             output_args=output_args,
             device=device,
         )
+
+        if loss_fn.__class__.__name__ == "SpectralLoss":
+            heads, energy_ref, tdm_ref, energy_pred, tdm_pred, pos = spectral_properties
+            all_heads.append(heads)
+            all_energy_ref.append(energy_ref)
+            all_tdm_ref.append(tdm_ref)
+            all_energy_pred.append(energy_pred)
+            all_tdm_pred.append(tdm_pred)
+            all_pos.append(pos)
+
+        valid_loss_heads.append(valid_loss_head)
+
         valid_err_log(
             valid_loss_head, eval_metrics, logger, log_errors, None, valid_loader_name
         )
-    # change checkpointing?
-    valid_loss = valid_loss_head  # consider only the last head for the checkpoint
+
+    # spectral loss
+    if loss_fn.__class__.__name__ == "SpectralLoss":
+        spectral_loss_val = validation_batches_spectral_loss([all_heads,all_energy_ref,all_tdm_ref,all_energy_pred,all_tdm_pred,all_pos],sigma=sigma)
+    # best average loss used for checkpointing
+    valid_loss = torch.mean(torch.tensor(valid_loss_heads))
+    # print losses
+    spectral_err_log(spectral_loss_val,epoch=None)
+    average_loss_heads(valid_loss,epoch=None)
 
     # variable used for broadcast by rank == 0 if epoch loop is exited early, e.g. patience
     exit_now = torch.zeros(1, device=device) if distributed else None
@@ -260,14 +312,35 @@ def train(
                 optimizer.eval()
             with param_context:
                 wandb_log_dict = {}
+
+                all_heads = []
+                all_energy_ref = []
+                all_tdm_ref = []
+                all_pos = []
+                all_energy_pred = []
+                all_tdm_pred = []
+
+                valid_loss_heads = []
                 for valid_loader_name, valid_loader in valid_loaders.items():
-                    valid_loss_head, eval_metrics = evaluate(
+                    valid_loss_head, eval_metrics, spectral_properties = evaluate(
                         model=model_to_evaluate,
                         loss_fn=loss_fn,
                         data_loader=valid_loader,
                         output_args=output_args,
                         device=device,
                     )
+
+                    if loss_fn.__class__.__name__ == "SpectralLoss":
+                        heads, energy_ref, tdm_ref, energy_pred, tdm_pred, pos = spectral_properties
+                        all_heads.append(heads)
+                        all_energy_ref.append(energy_ref)
+                        all_tdm_ref.append(tdm_ref)
+                        all_energy_pred.append(energy_pred)
+                        all_tdm_pred.append(tdm_pred)
+                        all_pos.append(pos)
+
+                    valid_loss_heads.append(valid_loss_head)
+
                     if rank == 0:
                         valid_err_log(
                             valid_loss_head,
@@ -277,6 +350,7 @@ def train(
                             epoch,
                             valid_loader_name,
                         )
+                        
                         if log_wandb:
                             wandb_log_dict[valid_loader_name] = {
                                 "epoch": epoch,
@@ -286,14 +360,22 @@ def train(
                                 ],
                                 "valid_rmse_f": eval_metrics["rmse_f"],
                             }
+
+                # spectral loss
+                if loss_fn.__class__.__name__ == "SpectralLoss":
+                    spectral_loss_val = validation_batches_spectral_loss([all_heads,all_energy_ref,all_tdm_ref,all_energy_pred,all_tdm_pred,all_pos],sigma=sigma)
+                # best average loss used for checkpointing
+                valid_loss = torch.mean(torch.tensor(valid_loss_heads))
+                # print losses
+                spectral_err_log(spectral_loss_val,epoch)
+                average_loss_heads(valid_loss,epoch)         
+
                 if plotter and epoch % plotter.plot_frequency == 0:
                     try:
                         plotter.plot(epoch, model_to_evaluate, rank)
                     except Exception as e:  # pylint: disable=broad-except
                         logging.debug(f"Plotting failed: {e}")
-                valid_loss = (
-                    valid_loss_head  # consider only the last head for the checkpoint
-                )
+
             if log_wandb:
                 wandb.log(wandb_log_dict)
             if rank == 0:
@@ -614,10 +696,24 @@ def evaluate(
 
     start_time = time.time()
 
+    heads = []
+    energy_ref = []
+    tdm_ref = []
+    pos = []
+    energy_pred = []
+    tdm_pred = []
+
     with preserve_grad_state(model):
         for batch in data_loader:
             batch = batch.to(device)
             batch_dict = batch.to_dict()
+            
+            if loss_fn.__class__.__name__ == "SpectralLoss":
+                heads.append(batch.head)
+                energy_ref.append(batch.energy)
+                tdm_ref.append(batch.dipole)
+                pos.append(batch.first_positions.detach())
+
             output = model(
                 batch_dict,
                 training=False,
@@ -625,13 +721,58 @@ def evaluate(
                 compute_virials=output_args["virials"],
                 compute_stress=output_args["stress"],
             )
+            
+            if loss_fn.__class__.__name__ == "SpectralLoss":
+                energy_pred.append(output['energy'].detach())
+                tdm_pred.append(output['dipole'].detach())
+
             avg_loss, aux = metrics(batch, output)
+      
     avg_loss, aux = metrics.compute()
     aux["time"] = time.time() - start_time
     metrics.reset()
 
-    return avg_loss, aux
+    spectral_properties = [heads, energy_ref, tdm_ref, energy_pred, tdm_pred, pos]
 
+    return avg_loss, aux, spectral_properties
+
+def flatten_property(prop):
+    
+    # stack all tensors for each head and batch
+    stacked = torch.stack([torch.stack(batch)for batch in prop])
+
+    # for heads and energies
+    if stacked.ndim == 3:
+
+        # (num_heads, num_batches, batch_size)
+        stacked = stacked.permute(1, 2, 0)
+        flattened = stacked.reshape(-1)
+
+    # for dipoles and positions
+    elif stacked.ndim == 4:
+
+        # (num_heads, num_batches, batch_size, 3)
+        stacked = stacked.permute(1, 2, 0, 3)
+        flattened = stacked.reshape(-1, 3)
+
+    else:
+        raise ValueError(f"Unexpected shape {stacked.shape}")
+
+    return flattened
+
+def validation_batches_spectral_loss(prop,sigma):
+
+    spectral_properties = [flatten_property(p) for p in prop]
+
+    all_heads,all_energy_ref,all_tdm_ref,all_energy_pred,all_tdm_pred,all_positions=spectral_properties
+
+    # reconstruct Batch for refs
+    ref = SimpleNamespace(head=all_heads,energy=all_energy_ref,dipole=all_tdm_ref,positions=all_positions)
+
+    # reconstruct TensorDict for preds
+    pred = {"energy": all_energy_pred,"dipole": all_tdm_pred}
+
+    return spectral_loss(ref,pred,sigma=sigma, grad=False)
 
 class MACELoss(Metric):
     def __init__(self, loss_fn: torch.nn.Module):

@@ -29,6 +29,7 @@ class AtomicData(torch_geometric.data.Data):
     edge_vectors: torch.Tensor
     edge_lengths: torch.Tensor
     positions: torch.Tensor
+    first_positions: torch.Tensor
     shifts: torch.Tensor
     unit_shifts: torch.Tensor
     cell: torch.Tensor
@@ -55,6 +56,7 @@ class AtomicData(torch_geometric.data.Data):
         edge_index: torch.Tensor,  # [2, n_edges]
         node_attrs: torch.Tensor,  # [n_nodes, n_node_feats]
         positions: torch.Tensor,  # [n_nodes, 3]
+        first_positions: torch.Tensor, # [1,3]
         shifts: torch.Tensor,  # [n_edges, 3],
         unit_shifts: torch.Tensor,  # [n_edges, 3]
         cell: Optional[torch.Tensor],  # [3,3]
@@ -86,6 +88,8 @@ class AtomicData(torch_geometric.data.Data):
 
         assert edge_index.shape[0] == 2 and len(edge_index.shape) == 2
         assert positions.shape == (num_nodes, 3)
+        first_positions = first_positions.unsqueeze(0)
+        assert first_positions.shape == (1,3)
         assert shifts.shape[1] == 3
         assert unit_shifts.shape[1] == 3
         assert len(node_attrs.shape) == 2
@@ -115,6 +119,7 @@ class AtomicData(torch_geometric.data.Data):
             "num_nodes": num_nodes,
             "edge_index": edge_index,
             "positions": positions,
+            "first_positions": first_positions,
             "shifts": shifts,
             "unit_shifts": unit_shifts,
             "cell": cell,
@@ -347,6 +352,7 @@ class AtomicData(torch_geometric.data.Data):
         cls_kwargs = dict(
             edge_index=torch.tensor(edge_index, dtype=torch.long),
             positions=torch.tensor(config.positions, dtype=torch.get_default_dtype()),
+            first_positions=torch.tensor(config.positions[0], dtype=torch.get_default_dtype()),
             shifts=torch.tensor(shifts, dtype=torch.get_default_dtype()),
             unit_shifts=torch.tensor(unit_shifts, dtype=torch.get_default_dtype()),
             cell=cell,
