@@ -114,7 +114,7 @@ def create_error_table(
             continue
         data_loader = all_data_loaders[name]
         logging.info(f"Evaluating {name} ...")
-        _, metrics = evaluate(
+        _, metrics,prop = evaluate(
             model,
             loss_fn=loss_fn,
             data_loader=data_loader,
