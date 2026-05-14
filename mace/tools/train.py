@@ -251,9 +251,10 @@ def train(
     # spectral loss
     if loss_fn.__class__.__name__ == "SpectralLoss":
         spectral_loss_val = validation_batches_spectral_loss([all_heads,all_energy_ref,all_tdm_ref,all_energy_pred,all_tdm_pred,all_pos],sigma=sigma)
+
     # best average loss used for checkpointing
-    valid_loss = torch.mean(torch.tensor(valid_loss_heads))
-    # print losses
+    # for each epoch find average of all heads and add spectral loss
+    valid_loss = torch.mean(torch.tensor(valid_loss_heads))+spectral_loss_val
     spectral_err_log(spectral_loss_val,epoch=None)
     average_loss_heads(valid_loss,epoch=None)
 
