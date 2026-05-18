@@ -183,7 +183,6 @@ def spectral_loss(ref: Batch, pred: TensorDict, sigma, grad=True) -> torch.Tenso
 
         # get all es1 entries
         es1_energy = ref.energy[i*num_heads]
-        # print("ES1 ENERGY ", es1_energy)
 
         # discard solvent 
         if es1_energy == 0.0:
@@ -198,24 +197,20 @@ def spectral_loss(ref: Batch, pred: TensorDict, sigma, grad=True) -> torch.Tenso
 
         nonsolvent_configs += 1
 
-        # ref_e = torch.tensor([ref.energy[(i*num_heads)+state] for state in range(0,num_heads)])
-        # pred_e = torch.tensor([pred['energy'][(i*num_heads)+state] for state in range(0,num_heads)])
         ref_e = torch.stack([ref.energy[(i*num_heads)+state] for state in range(0,num_heads)])
-        pred_e = torch.stack([pred['energy'][(i*num_heads)+state] for state in range(0,num_heads)])
+        with torch.no_grad():
+            pred_e = torch.stack([pred['energy'][(i*num_heads)+state] for state in range(0,num_heads)])
 
         # energy overlap matrix for that configuration 
         S = energy_overlap_matrix(ref_e,sigma)
-        # print("OVERLAP MATRIX ", S)
 
         ref_tdm = torch.stack([ref.dipole[(i*num_heads)+state] for state in range(num_heads)])
-        with torch.no_grad():
-            pred_tdm = torch.stack([pred["dipole"][(i*num_heads)+state] for state in range(num_heads)])
+        pred_tdm = torch.stack([pred["dipole"][(i*num_heads)+state] for state in range(num_heads)])
 
         # calculate reference and predicted local intensity
         local_intensity_ref, local_intensity_pred = local_intensity(S,ref_tdm,pred_tdm,ref_e,pred_e)
 
         spectral_mse[i] = mean_squared_error_local_intensity(local_intensity_ref,local_intensity_pred)
-        # print("EACH SPECTRAL MSE IN LOOP ", spectral_mse[i])
 
     if not(nonsolvent_configs==0):
         total_spectral_mse = torch.sum(spectral_mse)/nonsolvent_configs 
@@ -223,8 +218,6 @@ def spectral_loss(ref: Batch, pred: TensorDict, sigma, grad=True) -> torch.Tenso
         # remove gradients 
         total_spectral_mse = torch.tensor(0.0)   
         grad = False
-    # print("NUM NONSOLVENT CONFIGS ", nonsolvent_configs)
-    # print("SPECTRAL MSE ", total_spectral_mse)
 
     # set to false if validation 
     if grad==True:
@@ -252,7 +245,6 @@ def local_intensity(S,ref_tdm,pred_tdm,ref_e,pred_e):
 
     for i in range(0,len(ref_e)):
         mag_ref = ref_tdm[i][0]**2 + ref_tdm[i][1]**2 + ref_tdm[i][2]**2
-        # use torch.matmul?
         fosc_i_ref[i] = 2/3*(ref_e[i])*mag_ref*eV_hartree_conv
 
         mag_pred = pred_tdm[i][0]**2 + pred_tdm[i][1]**2 + pred_tdm[i][2]**2
@@ -770,8 +762,7 @@ class SpectralLoss(torch.nn.Module):
     ) -> torch.Tensor:
         
         unweighted_spectral_loss = spectral_loss(ref,pred,sigma=self.overlap_sigma) 
-        # if torch.isnan(unweighted_spectral_loss):
-        #     unweighted_spectral_loss = torch.tensor(0.0)
+        print("training spectral loss ", unweighted_spectral_loss)
 
         loss_energy = weighted_mean_squared_error_energy(ref, pred, ddp)
         loss_forces = mean_squared_error_forces(ref, pred, ddp)

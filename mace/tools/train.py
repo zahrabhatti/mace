@@ -366,7 +366,7 @@ def train(
                 if loss_fn.__class__.__name__ == "SpectralLoss":
                     spectral_loss_val = validation_batches_spectral_loss([all_heads,all_energy_ref,all_tdm_ref,all_energy_pred,all_tdm_pred,all_pos],sigma=sigma)
                 # best average loss used for checkpointing
-                valid_loss = torch.mean(torch.tensor(valid_loss_heads))
+                valid_loss = torch.mean(torch.tensor(valid_loss_heads))+spectral_loss_val
                 # print losses
                 spectral_err_log(spectral_loss_val,epoch)
                 average_loss_heads(valid_loss,epoch)         
@@ -773,7 +773,7 @@ def validation_batches_spectral_loss(prop,sigma):
     # reconstruct TensorDict for preds
     pred = {"energy": all_energy_pred,"dipole": all_tdm_pred}
 
-    return spectral_loss(ref,pred,sigma=sigma, grad=False)
+    return spectral_loss(ref,pred,sigma=sigma, grad=False) # multiply by spectral weighting?
 
 class MACELoss(Metric):
     def __init__(self, loss_fn: torch.nn.Module):
