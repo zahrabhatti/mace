@@ -680,7 +680,7 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
-        "--overlap_sigma", help="value of sigma for gaussian function", type=float, default=0.1
+        "--overlap_sigma", help="value of sigma for gaussian function", type=float, default=0.15
     )
 
     parser.add_argument(

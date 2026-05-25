@@ -192,14 +192,14 @@ def spectral_loss(ref: Batch, pred: TensorDict, sigma, grad=True) -> torch.Tenso
         try: 
             assert [ref.positions[i*num_heads][0] == ref.positions[(i*num_heads)+state][0] for state in range(1,num_heads)]
         except AssertionError:
-            print("Ensure training data files have same geometry ordering")
+            print("Ensure training and validation data files have same geometry ordering for each head")
             continue
 
         nonsolvent_configs += 1
 
         ref_e = torch.stack([ref.energy[(i*num_heads)+state] for state in range(0,num_heads)])
-        with torch.no_grad():
-            pred_e = torch.stack([pred['energy'][(i*num_heads)+state] for state in range(0,num_heads)])
+        # with torch.no_grad():
+        pred_e = torch.stack([pred['energy'][(i*num_heads)+state] for state in range(0,num_heads)])
 
         # energy overlap matrix for that configuration 
         S = energy_overlap_matrix(ref_e,sigma)
@@ -218,6 +218,7 @@ def spectral_loss(ref: Batch, pred: TensorDict, sigma, grad=True) -> torch.Tenso
         # remove gradients 
         total_spectral_mse = torch.tensor(0.0)   
         grad = False
+    # print("TOTAL SPECTRAL MSE ", total_spectral_mse)    
 
     # set to false if validation 
     if grad==True:
@@ -247,8 +248,10 @@ def local_intensity(S,ref_tdm,pred_tdm,ref_e,pred_e):
         mag_ref = ref_tdm[i][0]**2 + ref_tdm[i][1]**2 + ref_tdm[i][2]**2
         fosc_i_ref[i] = 2/3*(ref_e[i])*mag_ref*eV_hartree_conv
 
+        # tmp use reference energies
         mag_pred = pred_tdm[i][0]**2 + pred_tdm[i][1]**2 + pred_tdm[i][2]**2
         fosc_i_pred[i] = 2/3*(pred_e[i])*mag_pred*eV_hartree_conv
+        # fosc_i_pred[i] = 2/3*(ref_e[i])*mag_pred*eV_hartree_conv
 
     # now work out local intensity for each state 
     total_i_ref = torch.zeros(len(ref_e))
@@ -275,6 +278,10 @@ def local_intensity(S,ref_tdm,pred_tdm,ref_e,pred_e):
 def mean_squared_error_local_intensity(local_intensity_ref,local_intensity_pred):
 
     return torch.mean(torch.square((local_intensity_ref-local_intensity_pred)))
+    # instead work out sum of squares - don't average 
+    # return torch.sum(torch.square((local_intensity_ref-local_intensity_pred)))
+
+
 # ------------------------------------------------------------------------------
 # Polarizability Loss Function
 # ------------------------------------------------------------------------------
@@ -758,27 +765,38 @@ class SpectralLoss(torch.nn.Module):
 
 
     def forward(
-        self, ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
+        self, ref: Batch, pred: TensorDict, train_log: bool=False, ddp: Optional[bool] = None
     ) -> torch.Tensor:
         
         unweighted_spectral_loss = spectral_loss(ref,pred,sigma=self.overlap_sigma) 
-        print("training spectral loss ", unweighted_spectral_loss)
+        # print("training spectral loss ", unweighted_spectral_loss)
 
         loss_energy = weighted_mean_squared_error_energy(ref, pred, ddp)
         loss_forces = mean_squared_error_forces(ref, pred, ddp)
         loss_dipole = weighted_mean_squared_error_dipole_phaseless(ref, pred) * 100.0
 
-        return (
-            self.energy_weight * loss_energy
-            + self.forces_weight * loss_forces
-            + self.dipole_weight * loss_dipole
-            + self.spectral_weight * unweighted_spectral_loss
-        )
+        if train_log==False:
+            # return the total loss
+            return (
+                self.energy_weight * loss_energy
+                + self.forces_weight * loss_forces
+                + self.dipole_weight * loss_dipole
+                + self.spectral_weight * unweighted_spectral_loss
+            )
+        if train_log==True:
+            # return the total loss and training loss for logging
+            return (
+                self.energy_weight * loss_energy
+                + self.forces_weight * loss_forces
+                + self.dipole_weight * loss_dipole
+                + self.spectral_weight * unweighted_spectral_loss, 
+                unweighted_spectral_loss
+            )
 
     def __repr__(self):
         return (
             f"{self.__class__.__name__}(energy_weight={self.energy_weight:.3f}, "
-            f"forces_weight={self.forces_weight:.3f}, dipole_weight={self.dipole_weight:.3f},spectral_weight={self.spectral_weight:.3f})"
+            f"forces_weight={self.forces_weight:.3f}, dipole_weight={self.dipole_weight:.3f},spectral_weight={self.spectral_weight:.3f}), sigma={self.overlap_sigma}"
         )    
     
 class WeightedEnergyForcesL1L2Loss(torch.nn.Module):

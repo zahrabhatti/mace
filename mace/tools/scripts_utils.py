@@ -781,9 +781,10 @@ def get_swa(
             forces_weight=args.swa_forces_weight,
             dipole_weight=args.swa_dipole_weight,
             spectral_weight=args.swa_spectral_weight,
+            overlap_sigma=args.overlap_sigma
         )       
         logging.info(
-            f"Stage Two (after {args.start_swa} epochs) with loss function: {loss_fn_energy}, with energy weight : {args.swa_energy_weight}, forces weight : {args.swa_forces_weight}, dipole weight : {args.swa_dipole_weight} and learning rate : {args.swa_lr}"
+            f"Stage Two (after {args.start_swa} epochs) with loss function: {args.loss}, with energy weight : {args.swa_energy_weight}, forces weight : {args.swa_forces_weight}, dipole weight : {args.swa_dipole_weight}, spectral weight : {args.swa_spectral_weight}, sigma : {args.overlap_sigma} and learning rate : {args.swa_lr}"
         )    
     elif args.loss == "universal":
         loss_fn_energy = modules.UniversalLoss(

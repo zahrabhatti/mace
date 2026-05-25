@@ -164,7 +164,7 @@ def average_loss_heads(average_loss,epoch):
         inintial_phrase = "Initial"
     else:
         inintial_phrase = f"Epoch {epoch}"
-    logging.info(f"{inintial_phrase}: average loss of all heads={average_loss:8.8f}")
+    logging.info(f"{inintial_phrase}: average loss of all heads plus spectral loss={average_loss:8.8f}")
 
 def train(
     model: torch.nn.Module,
@@ -254,9 +254,17 @@ def train(
 
     # best average loss used for checkpointing
     # for each epoch find average of all heads and add spectral loss
-    valid_loss = torch.mean(torch.tensor(valid_loss_heads))+spectral_loss_val
+    avg_loss = torch.mean(torch.tensor(valid_loss_heads))
+    valid_loss = avg_loss+spectral_loss_val
     spectral_err_log(spectral_loss_val,epoch=None)
     average_loss_heads(valid_loss,epoch=None)
+
+    avg_val_metrics = {"epoch": None, 
+                       "head": "average",
+                       "mode": "average_validation", 
+                       "validation_spectral_loss": spectral_loss_val,
+                       "average_loss_heads": valid_loss}
+    logger.log(avg_val_metrics)
 
     # variable used for broadcast by rank == 0 if epoch loop is exited early, e.g. patience
     exit_now = torch.zeros(1, device=device) if distributed else None
@@ -366,10 +374,19 @@ def train(
                 if loss_fn.__class__.__name__ == "SpectralLoss":
                     spectral_loss_val = validation_batches_spectral_loss([all_heads,all_energy_ref,all_tdm_ref,all_energy_pred,all_tdm_pred,all_pos],sigma=sigma)
                 # best average loss used for checkpointing
-                valid_loss = torch.mean(torch.tensor(valid_loss_heads))+spectral_loss_val
+                avg_loss = torch.mean(torch.tensor(valid_loss_heads))
+                valid_loss = avg_loss+spectral_loss_val
                 # print losses
                 spectral_err_log(spectral_loss_val,epoch)
-                average_loss_heads(valid_loss,epoch)         
+                average_loss_heads(valid_loss,epoch)   
+
+                avg_val_metrics = {"epoch": epoch, 
+                       "head": "average",
+                       "mode": "average_validation", 
+                       "validation_spectral_loss": spectral_loss_val,
+                       "average_loss_heads": valid_loss}
+                logger.log(avg_val_metrics)
+      
 
                 if plotter and epoch % plotter.plot_frequency == 0:
                     try:
@@ -553,23 +570,40 @@ def take_step(
             compute_virials=output_args["virials"],
             compute_stress=output_args["stress"],
         )
-        loss = loss_fn(pred=output, ref=batch)
+
+        if loss_fn.__class__.__name__ == "SpectralLoss":
+            loss,spectral_loss_logs = loss_fn(pred=output,ref=batch,train_log=True)
+        else:
+            loss = loss_fn(pred=output, ref=batch)
         loss.backward()
         if max_grad_norm is not None:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
 
-        return loss
+        if loss_fn.__class__.__name__ == "SpectralLoss":
+            return loss, spectral_loss_logs
+        else:
+            return loss
 
-    loss = closure()
+    if loss_fn.__class__.__name__ == "SpectralLoss":
+        loss,spectral_loss_logs = closure()
+    else:     
+        loss = closure()
     optimizer.step()
 
     if ema is not None:
         ema.update()
 
-    loss_dict = {
+    if loss_fn.__class__.__name__ == "SpectralLoss":
+        loss_dict = {
         "loss": to_numpy(loss),
         "time": time.time() - start_time,
+        "spectral_loss_training": to_numpy(spectral_loss_logs)
     }
+    else:     
+        loss_dict = {
+            "loss": to_numpy(loss),
+            "time": time.time() - start_time,
+        }
 
     return loss, loss_dict
 
@@ -772,8 +806,10 @@ def validation_batches_spectral_loss(prop,sigma):
 
     # reconstruct TensorDict for preds
     pred = {"energy": all_energy_pred,"dipole": all_tdm_pred}
-
-    return spectral_loss(ref,pred,sigma=sigma, grad=False) # multiply by spectral weighting?
+    
+    # to compare the effect of changing sigma, fix it for validation loss 
+    # return spectral_loss(ref,pred,sigma=sigma, grad=False)
+    return spectral_loss(ref,pred,sigma=sigma, grad=False)
 
 class MACELoss(Metric):
     def __init__(self, loss_fn: torch.nn.Module):
